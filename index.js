@@ -91,7 +91,7 @@ async function sendBatch(sock, batch, text) {
     try {
       await sock.sendMessage(jid, { text: variateText(text) })
       console.log(`✅ Broadcast terkirim ke ${jid}`)
-      await delay(300)
+      await delay(5000)
     } catch (err) {
       console.error(`❌ Gagal broadcast ke ${jid}:`, err.message)
     }
@@ -122,7 +122,7 @@ async function broadcastAll(sock) {
     batch.forEach(jid => sentGroups.add(jid))
 
     await refreshGroups(sock)
-    await delay(2000)
+    await delay(10000)
   }
 }
 
