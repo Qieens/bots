@@ -6,6 +6,7 @@ const pino = require('pino')
 const chalk = require('chalk')
 const qrcode = require('qrcode-terminal')
 const { Boom } = require('@hapi/boom')
+const { decodeJid } = require('@whiskeysockets/baileys')
 const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, jidNormalizedUser } = require('@whiskeysockets/baileys')
 const { dataBase } = require('./src/database')
 const { GroupParticipantsUpdate, MessagesUpsert } = require('./src/message')
@@ -329,7 +330,7 @@ async function startNazeBot() {
   })
 
   setInterval(async () => {
-    if (naze?.user?.id) await naze.sendPresenceUpdate('available', naze.decodeJid(naze.user.id)).catch(() => {})
+    if (naze?.user?.id) await naze.sendPresenceUpdate('available', decodeJid(naze.user.id)).catch(() => {})
   }, 10 * 60 * 1000)
 
   return naze
