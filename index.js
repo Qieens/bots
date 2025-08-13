@@ -8,10 +8,10 @@ const qrcode = require('qrcode-terminal')
 const { Boom } = require('@hapi/boom')
 const { decodeJid } = require('@whiskeysockets/baileys')
 const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, jidNormalizedUser } = require('@whiskeysockets/baileys')
-const { dataBase } = require('./src/database')
 const { GroupParticipantsUpdate, MessagesUpsert } = require('./src/message')
 const { exec } = require('child_process')
 const { loadConfig, saveConfig } = require('./src/config')
+const { save, load } = require('./src/sqlitedb')
 
 const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
 const BATCH_SIZE = 20
@@ -54,16 +54,12 @@ const variateText = (text) => {
 
 const delay = ms => new Promise(res => setTimeout(res, ms))
 
-// Database
-const storeDB = dataBase(global.tempatStore || './store.json')
-const database = dataBase(global.tempatDB || './database.json')
-
 let globalStore = {}
 let globalDB = {}
 
 async function loadDBs() {
-  const loadData = await database.read()
-  const storeLoadData = await storeDB.read()
+  const loadData = load('database')
+  const storeLoadData = load('store')
   globalDB = loadData && Object.keys(loadData).length > 0 ? loadData : {
     hit: {}, set: {}, cmd: {}, store: {}, users: {}, game: {}, groups: {}, database: {}, premium: [], sewa: []
   }
@@ -150,10 +146,10 @@ async function startBroadcastLoop(sock) {
 async function startNazeBot() {
   await loadDBs()
   // auto save interval
-  setInterval(async () => {
-    if (globalDB) await database.write(globalDB)
-    if (globalStore) await storeDB.write(globalStore)
-  }, 30 * 1000)
+  setInterval(() => {
+    if (globalDB) save('database', globalDB)
+    if (globalStore) save('store', globalStore)
+  }, 30000)
 
   const { state, saveCreds } = await useMultiFileAuthState('nazedev')
   const { version, isLatest } = await fetchLatestBaileysVersion()
@@ -259,14 +255,23 @@ async function startNazeBot() {
 
       // Command Join Grup
       if (teks.startsWith('.join ')) {
-        const link = teks.split(' ')[1]
-        if (!link || !link.includes('whatsapp.com')) return reply('❌ Format salah. Contoh: `.join https://chat.whatsapp.com/xxxxx`')
-        const code = link.split('/').pop()
-        try {
-          await naze.groupAcceptInvite(code)
-          return reply('✅ Berhasil masuk grup.')
-        } catch (err) {
-          return reply('❌ Gagal masuk grup: ' + err.message)
+        const links = teks.split(' ').slice(1) // ambil semua link setelah .join
+        if (links.length === 0) return reply('❌ Format salah. Contoh: `.join https://chat.whatsapp.com/xxxxx`')
+
+        for (const link of links) {
+          if (!link.includes('whatsapp.com')) {
+            await reply(`❌ Link tidak valid: ${link}`)
+            continue
+          }
+          const code = link.split('/').pop().split('?')[0] // ambil kode invite tanpa query params
+          try {
+            await naze.groupAcceptInvite(code)
+            await reply(`✅ Berhasil masuk grup: ${link}`)
+          } catch (err) {
+            await reply(`❌ Gagal masuk grup: ${err.message} (${link})`)
+          }
+          // Delay 5 detik biar gak spam request sekaligus
+          await delay(5000)
         }
       }
 
@@ -338,16 +343,16 @@ async function startNazeBot() {
 
 startNazeBot()
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('SIGINT diterima, menyimpan database...')
-  if (globalDB) await database.write(globalDB)
-  if (globalStore) await storeDB.write(globalStore)
+  if (globalDB) save('database', globalDB)
+  if (globalStore) save('store', globalStore)
   process.exit(0)
 })
 
-process.on('SIGTERM', async () => {
+process.on('SIGTERM', () => {
   console.log('SIGTERM diterima, menyimpan database...')
-  if (globalDB) await database.write(globalDB)
-  if (globalStore) await storeDB.write(globalStore)
+  if (globalDB) save('database', globalDB)
+  if (globalStore) save('store', globalStore)
   process.exit(0)
 })
