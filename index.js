@@ -13,7 +13,7 @@ const { exec } = require('child_process')
 const { loadConfig, saveConfig } = require('./src/config')
 const { save, load } = require('./src/sqlitedb')
 
-const OWNER_NUMBER = '628975539822@s.whatsapp.net' // ganti nomor owner kamu
+const OWNER_NUMBER = '6281243027475@s.whatsapp.net' // ganti nomor owner kamu
 const BATCH_SIZE = 20
 
 // Load config
