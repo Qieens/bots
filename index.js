@@ -1,358 +1,194 @@
-process.env.BAILEYS_NO_LOG = 'true'
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  useSingleFileAuthState
+} = require('@whiskeysockets/baileys');
+const fs = require('fs');
+const pino = require('pino');
+const readline = require('readline');
 
-const fs = require('fs')
-const os = require('os')
-const pino = require('pino')
-const chalk = require('chalk')
-const qrcode = require('qrcode-terminal')
-const { Boom } = require('@hapi/boom')
-const { decodeJid } = require('@whiskeysockets/baileys')
-const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, jidNormalizedUser } = require('@whiskeysockets/baileys')
-const { GroupParticipantsUpdate, MessagesUpsert } = require('./src/message')
-const { exec } = require('child_process')
-const { loadConfig, saveConfig } = require('./src/config')
-const { save, load } = require('./src/sqlitedb')
+// === FILE CONFIG ===
+const CONFIG_FILE = 'config.json';
+const PROMO_FILE = 'promo.json';
 
-const OWNER_NUMBER = '6281243027475@s.whatsapp.net' // ganti nomor owner kamu
-const BATCH_SIZE = 20
+let promoteActive = false; 
+let promoteTimer = null;  
 
-// Load config
-let config = loadConfig()
-let { currentText, currentIntervalMs, broadcastActive, variatetextActive } = config
-const updateConfig = () => {
-  config.currentText = currentText
-  config.currentIntervalMs = currentIntervalMs
-  config.broadcastActive = broadcastActive
-  config.variatetextActive = variatetextActive
-  saveConfig(config)
-}
-
-// Utils
-const parseInterval = (text) => {
-  const match = text.match(/^(\d+)(s|m|h)$/i)
-  if (!match) return null
-  const num = parseInt(match[1])
-  return match[2].toLowerCase() === 's' ? num * 1000 : match[2].toLowerCase() === 'm' ? num * 60000 : num * 3600000
-}
-
-const humanInterval = (ms) => {
-  if (ms < 60000) return `${ms / 1000}s`
-  if (ms < 3600000) return `${ms / 60000}m`
-  return `${ms / 3600000}h`
-}
-
-const variateText = (text) => {
-  if (!variatetextActive) return text
-  const emojis = ['✨', '✅', '🔥', '🚀', '📌', '🧠']
-  const zwsp = '\u200B'
-  const emoji = emojis[Math.floor(Math.random() * emojis.length)]
-  const rand = Math.floor(Math.random() * 3)
-  return rand === 0 ? text + ' ' + emoji
-    : rand === 1 ? text.replace(/\s/g, m => m + (Math.random() > 0.8 ? zwsp : ''))
-    : text
-}
-
-const delay = ms => new Promise(res => setTimeout(res, ms))
-
-let globalStore = {}
-let globalDB = {}
-
-async function loadDBs() {
-  const loadData = load('database')
-  const storeLoadData = load('store')
-  globalDB = loadData && Object.keys(loadData).length > 0 ? loadData : {
-    hit: {}, set: {}, cmd: {}, store: {}, users: {}, game: {}, groups: {}, database: {}, premium: [], sewa: []
+// === LOAD / SAVE CONFIG ===
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ delay: 5000, interval: "1h" }, null, 2));
   }
-  globalStore = storeLoadData && Object.keys(storeLoadData).length > 0 ? storeLoadData : {
-    contacts: {}, presences: {}, messages: {}, groupMetadata: {}
-  }
+  return JSON.parse(fs.readFileSync(CONFIG_FILE));
+}
+function saveConfig(cfg) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+}
+function loadPromo() {
+  if (!fs.existsSync(PROMO_FILE)) fs.writeFileSync(PROMO_FILE, JSON.stringify([], null, 2));
+  return JSON.parse(fs.readFileSync(PROMO_FILE));
+}
+function savePromo(promos) {
+  fs.writeFileSync(PROMO_FILE, JSON.stringify(promos, null, 2));
+}
+function delay(ms) {
+  return new Promise(res => setTimeout(res, ms));
 }
 
-// Broadcast system
-let broadcastTimeout
-let isBroadcastRunning = false
-let groupCache = {}
+// === PARSER DURASI ===
+function parseDuration(str) {
+  const regex = /(\d+)([smhd])/g;
+  let ms = 0, match;
+  while ((match = regex.exec(str)) !== null) {
+    const val = parseInt(match[1]);
+    const unit = match[2];
+    if (unit === 's') ms += val * 1000;
+    if (unit === 'm') ms += val * 60 * 1000;
+    if (unit === 'h') ms += val * 60 * 60 * 1000;
+    if (unit === 'd') ms += val * 24 * 60 * 60 * 1000;
+  }
+  return ms;
+}
 
-async function refreshGroups(sock) {
+// === AUTO PROMOTE LOOP ===
+async function autoPromoteLoop(sock) {
   try {
-    groupCache = await sock.groupFetchAllParticipating()
-    console.log(`🔄 Cache grup diperbarui: ${Object.keys(groupCache).length} grup`)
+    if (!promoteActive) return;
+
+    const promos = loadPromo();
+    const cfg = loadConfig();
+    if (promos.length === 0) {
+      console.log("⚠️ Tidak ada pesan promo, gunakan .setpromo dulu");
+      return;
+    }
+
+    const groups = await sock.groupFetchAllParticipating();
+    const groupIds = Object.keys(groups);
+
+    console.log(`📢 Kirim promo ke ${groupIds.length} grup, delay ${cfg.delay / 1000}s`);
+
+    for (let i = 0; i < groupIds.length; i++) {
+      if (!promoteActive) {
+        console.log("🛑 AutoPromote dihentikan di tengah jalan.");
+        return;
+      }
+      const groupId = groupIds[i];
+      for (let pesan of promos) {
+        await sock.sendMessage(groupId, { text: pesan });
+        console.log(`✅ Terkirim ke ${groups[groupId].subject}: ${pesan}`);
+      }
+      if (i < groupIds.length - 1) {
+        await delay(cfg.delay);
+      }
+    }
+
+    console.log("🎉 Semua promo terkirim!");
+    if (promoteActive) {
+      const ulang = parseDuration(cfg.interval) || 60 * 60 * 1000;
+      console.log(`⏳ Tunggu ${(ulang / 1000 / 60).toFixed(1)} menit untuk siklus berikutnya...`);
+      promoteTimer = setTimeout(() => autoPromoteLoop(sock), ulang);
+    }
   } catch (err) {
-    console.error('Gagal refresh group cache:', err.message)
+    console.error("❌ Error autopromote:", err);
   }
 }
 
-async function sendBatch(sock, batch, text) {
-  for (const jid of batch) {
-    try {
-      await sock.sendMessage(jid, { text: variateText(text) })
-      console.log(`✅ Broadcast terkirim ke ${jid}`)
-      await delay(5000)
-    } catch (err) {
-      console.error(`❌ Gagal broadcast ke ${jid}:`, err.message)
-    }
+// === PAIRING LOGIN (NO QR) ===
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth');
+  const { version } = await fetchLatestBaileysVersion();
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false, // ❌ Tidak pakai QR
+    logger: pino({ level: "silent" })
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  // Jika belum login, minta nomor + pairing code
+  if (!sock.authState.creds.registered) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const question = (text) => new Promise((res) => rl.question(text, res));
+    const nomor = await question("Masukkan nomor WhatsApp (contoh: 628xx): ");
+    rl.close();
+    const code = await sock.requestPairingCode(nomor);
+    console.log(`🔗 Pairing code untuk ${nomor}: ${code}`);
   }
+
+  // === EVENT MESSAGE ===
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const m = messages[0];
+    if (!m.message) return;
+    const from = m.key.remoteJid;
+    const type = Object.keys(m.message)[0];
+    const body = type === "conversation" ? m.message.conversation :
+      type === "extendedTextMessage" ? m.message.extendedTextMessage.text : "";
+
+    if (!body.startsWith('.')) return;
+    const cmd = body.split(" ")[0].slice(1).toLowerCase();
+    const pesanCommand = body.split(" ").slice(1).join(" ");
+    const config = loadConfig();
+
+    async function reply(text) {
+      await sock.sendMessage(from, { text });
+    }
+
+    switch (cmd) {
+      case 'setpromo':
+        if (!pesanCommand) return reply("❌ Format: .setpromo <pesan>");
+        const promos = loadPromo();
+        promos.push(pesanCommand);
+        savePromo(promos);
+        reply(`✅ Promo ditambahkan:\n${pesanCommand}`);
+        break;
+
+      case 'setdelay':
+        if (!pesanCommand) return reply("❌ Format: .setdelay 5s / 10s / 2m");
+        config.delay = parseDuration(pesanCommand);
+        saveConfig(config);
+        reply(`✅ Delay diatur: ${pesanCommand}`);
+        break;
+
+      case 'setinterval':
+        if (!pesanCommand) return reply("❌ Format: .setinterval 30m / 2h / 1d");
+        config.interval = pesanCommand;
+        saveConfig(config);
+        reply(`✅ Interval diatur: ${pesanCommand}`);
+        break;
+
+      case 'autopromote':
+        if (promoteActive) return reply("⚠️ AutoPromote sudah berjalan!");
+        promoteActive = true;
+        reply("🚀 AutoPromote dimulai 24/7...");
+        autoPromoteLoop(sock);
+        break;
+
+      case 'stopromote':
+        if (!promoteActive) return reply("⚠️ AutoPromote tidak aktif.");
+        promoteActive = false;
+        if (promoteTimer) clearTimeout(promoteTimer);
+        reply("🛑 AutoPromote dihentikan.");
+        break;
+
+      case 'cekpromo':
+        const list = loadPromo();
+        if (list.length === 0) return reply("⚠️ Belum ada promo");
+        reply("📋 Daftar Promo:\n" + list.map((p, i) => `${i + 1}. ${p}`).join("\n"));
+        break;
+
+      case 'delpromo':
+        const promosNow = loadPromo();
+        if (promosNow.length === 0) return reply("⚠️ Tidak ada promo");
+        promosNow.pop();
+        savePromo(promosNow);
+        reply("🗑️ Promo terakhir dihapus");
+        break;
+    }
+  });
 }
 
-async function broadcastAll(sock) {
-  if (!currentText) return
-
-  let sentGroups = new Set()
-
-  while (true) {
-    const allGroups = Object.entries(groupCache)
-      .filter(([jid, info]) => !info.announce && !sentGroups.has(jid))
-      .map(([jid]) => jid)
-
-    if (allGroups.length === 0) {
-      await sock.sendMessage(OWNER_NUMBER, { text: '✅ Semua grup sudah dikirimi broadcast.' })
-      break
-    }
-
-    const batch = allGroups.slice(0, BATCH_SIZE)
-
-    await sock.sendMessage(OWNER_NUMBER, { text: `📢 Mulai kirim batch, ukuran batch: ${batch.length}` })
-    await sendBatch(sock, batch, currentText)
-    await sock.sendMessage(OWNER_NUMBER, { text: `✅ Batch selesai dikirim.` })
-
-    batch.forEach(jid => sentGroups.add(jid))
-
-    await refreshGroups(sock)
-    await delay(10000)
-  }
-}
-
-async function startBroadcastLoop(sock) {
-  if (broadcastTimeout) clearTimeout(broadcastTimeout)
-  if (isBroadcastRunning) return
-  isBroadcastRunning = true
-  await refreshGroups(sock)
-
-  async function loop() {
-    if (!broadcastActive) {
-      isBroadcastRunning = false
-      return
-    }
-    await broadcastAll(sock)
-    await delay(currentIntervalMs)
-    await refreshGroups(sock)
-    return loop()
-  }
-
-  return loop()
-}
-
-// Bot start
-async function startNazeBot() {
-  await loadDBs()
-  // auto save interval
-  setInterval(() => {
-    if (globalDB) save('database', globalDB)
-    if (globalStore) save('store', globalStore)
-  }, 30000)
-
-  const { state, saveCreds } = await useMultiFileAuthState('nazedev')
-  const { version, isLatest } = await fetchLatestBaileysVersion()
-  const level = pino({ level: 'silent' })
-
-  globalStore.loadMessage = function (remoteJid, id) {
-    const messages = globalStore.messages?.[remoteJid]?.array
-    if (!messages) return null
-    return messages.find(msg => msg?.key?.id === id) || null
-  }
-  const getMessage = async (key) => {
-    if (globalStore) {
-      const msg = await globalStore.loadMessage(key.remoteJid, key.id)
-      return msg?.message || ''
-    }
-    return { conversation: 'Halo Saya Naze Bot' }
-  }
-
-  const naze = WAConnection({
-    logger: level,
-    getMessage,
-    syncFullHistory: true,
-    maxMsgRetryCount: 15,
-    retryRequestDelayMs: 10,
-    defaultQueryTimeoutMs: 0,
-    connectTimeoutMs: 60000,
-    browser: Browsers.ubuntu('Chrome'),
-    generateHighQualityLinkPreview: true,
-    shouldSyncHistoryMessage: msg => !!msg.syncType,
-    transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 10 },
-    appStateMacVerification: { patch: true, snapshot: true },
-    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, level) },
-  })
-
-  naze.ev.on('creds.update', saveCreds)
-
-  naze.ev.on('connection.update', async (update) => {
-    const { qr, connection, lastDisconnect, isNewLogin } = update
-    if (qr) {
-      console.clear()
-      console.log(`📅 ${new Date().toLocaleString()} | 📌 Scan QR:\n`)
-      qrcode.generate(qr, { small: true })
-    }
-    if (connection === 'open') {
-      console.log('✅ Bot connected')
-      if (broadcastActive) {
-        await naze.sendMessage(OWNER_NUMBER, { text: `♻️ Melanjutkan broadcast...\nInterval: ${humanInterval(currentIntervalMs)}` })
-        startBroadcastLoop(naze)
-      }
-    }
-    if (connection === 'close') {
-      const reason = new Boom(lastDisconnect?.error)?.output.statusCode
-      console.log(`❌ Connection closed, code: ${reason}`)
-      if (reason !== DisconnectReason.loggedOut) {
-        console.log('🔁 Reconnecting in 5 seconds...')
-        setTimeout(() => startNazeBot(), 5000)
-      } else {
-        console.log('⚠️ Session logged out, silakan scan ulang QR')
-        exec('rm -rf ./nazedev/*')
-        process.exit(1)
-      }
-    }
-  })
-
-  naze.ev.on('group-participants.update', async (update) => {
-    await GroupParticipantsUpdate(naze, update, globalStore)
-    await refreshGroups(naze)
-  })
-
-  naze.ev.on('groups.update', (updates) => {
-    for (const update of updates) {
-      if (globalStore.groupMetadata[update.id]) Object.assign(globalStore.groupMetadata[update.id], update)
-      else globalStore.groupMetadata[update.id] = update
-    }
-  })
-
-  naze.ev.on('presence.update', ({ id, presences: update }) => {
-    globalStore.presences[id] = globalStore.presences?.[id] || {}
-    Object.assign(globalStore.presences[id], update)
-  })
-
-  let lastDecryptWarn = 0
-  const decryptWarnInterval = 60 * 1000
-
-  naze.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0]
-    if (!msg.message || msg.key.fromMe) return
-
-    const jid = msg.key.remoteJid || ''
-    const fromOwner = jid === OWNER_NUMBER
-    const isGroup = jid.endsWith('.g.us')
-
-    if (isGroup && !fromOwner) return
-    if (!fromOwner) return
-
-    try {
-      const teks = msg.message.conversation
-        || msg.message?.extendedTextMessage?.text
-        || msg.message?.imageMessage?.caption
-        || ''
-
-      const reply = (text) => naze.sendMessage(OWNER_NUMBER, { text })
-
-      // Command Join Grup
-      if (teks.startsWith('.join ')) {
-        const links = teks.split(' ').slice(1) // ambil semua link setelah .join
-        if (links.length === 0) return reply('❌ Format salah. Contoh: `.join https://chat.whatsapp.com/xxxxx`')
-
-        for (const link of links) {
-          if (!link.includes('whatsapp.com')) {
-            await reply(`❌ Link tidak valid: ${link}`)
-            continue
-          }
-          const code = link.split('/').pop().split('?')[0] // ambil kode invite tanpa query params
-          try {
-            await naze.groupAcceptInvite(code)
-            await reply(`✅ Berhasil masuk grup: ${link}`)
-          } catch (err) {
-            await reply(`❌ Gagal masuk grup: ${err.message} (${link})`)
-          }
-          // Delay 5 detik biar gak spam request sekaligus
-          await delay(5000)
-        }
-      }
-
-      // Broadcast commands
-      if (teks.startsWith('.teks ')) {
-        currentText = teks.slice(6).trim()
-        updateConfig()
-        return reply('✅ Pesan broadcast disimpan.')
-      }
-      if (teks.startsWith('.setinterval ')) {
-        const val = parseInterval(teks.slice(13).trim())
-        if (!val) return reply('❌ Format salah. Contoh: `.setinterval 5m`')
-        currentIntervalMs = val
-        updateConfig()
-        return reply(`✅ Interval broadcast diset: ${humanInterval(val)}`)
-      }
-      if (teks === '.variasi on') {
-        variatetextActive = true
-        updateConfig()
-        return reply('✅ Variasi teks diaktifkan.')
-      }
-      if (teks === '.variasi off') {
-        variatetextActive = false
-        updateConfig()
-        return reply('✅ Variasi teks dinonaktifkan.')
-      }
-      if (teks === '.start') {
-        if (!currentText) return reply('❌ Set pesan dulu dengan `.teks <pesan>`')
-        if (broadcastActive) return reply('❌ Broadcast sudah aktif.')
-        broadcastActive = true
-        updateConfig()
-        startBroadcastLoop(naze)
-        return reply('✅ Broadcast dimulai.')
-      }
-      if (teks === '.stop') {
-        if (!broadcastActive) return reply('❌ Broadcast belum aktif.')
-        broadcastActive = false
-        if (broadcastTimeout) clearTimeout(broadcastTimeout)
-        updateConfig()
-        return reply('🛑 Broadcast dihentikan.')
-      }
-      if (teks === '.status') {
-        return reply(`📊 Status Broadcast:\n\nAktif: ${broadcastActive ? '✅ Ya' : '❌ Tidak'}\nInterval: ${humanInterval(currentIntervalMs)}\nVariasi : ${variatetextActive ? '✅ Aktif' : '❌ Mati'}\nPesan: ${currentText || '⚠️ Belum diset!'}`)
-      }
-
-      // process pesan lain
-      await MessagesUpsert(naze, { messages }, globalStore)
-
-    } catch (e) {
-      if (e.message && e.message.includes('Failed decrypt')) {
-        console.warn('⚠️ Gagal decrypt pesan.')
-        const now = Date.now()
-        if (now - lastDecryptWarn > decryptWarnInterval) {
-          lastDecryptWarn = now
-          await naze.sendMessage(OWNER_NUMBER, { text: '⚠️ Pesan gagal didekripsi, mohon kirim ulang.' }).catch(() => {})
-        }
-      } else {
-        console.error('Error di messages.upsert:', e)
-      }
-    }
-  })
-
-  setInterval(async () => {
-    if (naze?.user?.id) await naze.sendPresenceUpdate('available', decodeJid(naze.user.id)).catch(() => {})
-  }, 10 * 60 * 1000)
-
-  return naze
-}
-
-startNazeBot()
-
-process.on('SIGINT', () => {
-  console.log('SIGINT diterima, menyimpan database...')
-  if (globalDB) save('database', globalDB)
-  if (globalStore) save('store', globalStore)
-  process.exit(0)
-})
-
-process.on('SIGTERM', () => {
-  console.log('SIGTERM diterima, menyimpan database...')
-  if (globalDB) save('database', globalDB)
-  if (globalStore) save('store', globalStore)
-  process.exit(0)
-})
+startBot();
