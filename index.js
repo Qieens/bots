@@ -2,8 +2,6 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  useSingleFileAuthState
 } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const pino = require('pino');
@@ -103,21 +101,32 @@ async function startBot() {
   const sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false, // ❌ Tidak pakai QR
+    printQRInTerminal: false,
     logger: pino({ level: "silent" })
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Jika belum login, minta nomor + pairing code
+  // Pairing code jika belum login
   if (!sock.authState.creds.registered) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const question = (text) => new Promise((res) => rl.question(text, res));
     const nomor = await question("Masukkan nomor WhatsApp (contoh: 628xx): ");
     rl.close();
+
     const code = await sock.requestPairingCode(nomor);
     console.log(`🔗 Pairing code untuk ${nomor}: ${code}`);
   }
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect } = update;
+    if (connection === 'open') {
+      console.log('✅ Bot berhasil login!');
+    } else if (connection === 'close') {
+      console.log('❌ Koneksi terputus, mencoba ulang...');
+      startBot();
+    }
+  });
 
   // === EVENT MESSAGE ===
   sock.ev.on('messages.upsert', async ({ messages }) => {
