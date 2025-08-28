@@ -72,11 +72,19 @@ async function autoPromoteLoop(sock) {
         console.log("🛑 AutoPromote dihentikan di tengah jalan.");
         return;
       }
+
       const groupId = groupIds[i];
+      const metadata = await sock.groupMetadata(groupId); // ambil metadata grup
+      const participants = metadata.participants.map(p => p.id); // daftar member
+
       for (let pesan of promos) {
-        await sock.sendMessage(groupId, { text: pesan });
-        console.log(`✅ Terkirim ke ${groups[groupId].subject}: ${pesan}`);
+        await sock.sendMessage(groupId, {
+          text: pesan,
+          mentions: participants // ini bikin pesan jadi hidetag
+        });
+        console.log(`✅ Terkirim ke ${metadata.subject}: ${pesan}`);
       }
+
       if (i < groupIds.length - 1) {
         await delay(cfg.delay);
       }
