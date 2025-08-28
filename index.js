@@ -65,7 +65,7 @@ async function autoPromoteLoop(sock) {
     const groups = await sock.groupFetchAllParticipating();
     const groupIds = Object.keys(groups);
 
-    console.log(`📢 Kirim promo ke ${groupIds.length} grup, delay ${cfg.delay / 1000}s`);
+    console.log(`📢 Kirim promo ke ${groupIds.length} grup, delay ${cfg.delay / 1000}s, hidetag=${cfg.hidetag}`);
 
     for (let i = 0; i < groupIds.length; i++) {
       if (!promoteActive) {
@@ -74,14 +74,20 @@ async function autoPromoteLoop(sock) {
       }
 
       const groupId = groupIds[i];
-      const metadata = await sock.groupMetadata(groupId); // ambil metadata grup
-      const participants = metadata.participants.map(p => p.id); // daftar member
+      const metadata = await sock.groupMetadata(groupId);
 
       for (let pesan of promos) {
-        await sock.sendMessage(groupId, {
-          text: pesan,
-          mentions: participants // ini bikin pesan jadi hidetag
-        });
+        if (cfg.hidetag) {
+          // kirim hidetag
+          const participants = metadata.participants.map(p => p.id);
+          await sock.sendMessage(groupId, {
+            text: pesan,
+            mentions: participants
+          });
+        } else {
+          // kirim normal
+          await sock.sendMessage(groupId, { text: pesan });
+        }
         console.log(`✅ Terkirim ke ${metadata.subject}: ${pesan}`);
       }
 
@@ -100,7 +106,6 @@ async function autoPromoteLoop(sock) {
     console.error("❌ Error autopromote:", err);
   }
 }
-
 // === PAIRING LOGIN (NO QR) ===
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth');
@@ -169,6 +174,18 @@ async function startBot() {
         saveConfig(config);
         reply(`✅ Delay diatur: ${pesanCommand}`);
         break;
+
+      case 'sethidetag':
+        if (!pesanCommand) return     reply("⚠️Gunakan: .sethidetag on/off");
+  const val = pesanCommand.toLowerCase();
+  if (val !== "on" && val !== "off") return reply("⚠️ Pilihan hanya on/off");
+
+  const cfg = loadConfig();
+  cfg.hidetag = val === "on";
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+
+  reply(`✅ Mode hidetag ${cfg.hidetag ? "AKTIF" : "NONAKTIF"}`);
+  break;
 
       case 'setinterval':
         if (!pesanCommand) return reply("❌ Format: .setinterval 30m / 2h / 1d");
