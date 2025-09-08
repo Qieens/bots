@@ -218,8 +218,6 @@ async function startSock() {
         }
       } catch { continue; }
 
-      simpanLog(sender, pesan);
-
       if (jid.endsWith('@g.us') && !fromMe) continue;
       if (!sender.includes(config.owner_number.replace('@s.whatsapp.net','')) && !fromMe) continue;
 
