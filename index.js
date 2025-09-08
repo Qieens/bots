@@ -9,7 +9,6 @@ const fs = require('fs');
 const pino = require('pino');
 const readline = require('readline');
 const clc = require('cli-color');
-const { simpanLog } = require('./loghandler');
 
 // === CONFIG ===
 const CONFIG_FILE = 'config.json';
