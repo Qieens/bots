@@ -56,8 +56,8 @@ async function Broadcastonce(sock, pesanBroadcast, sender, lastMsgMedia = null) 
         const msgOptions = {};
         if (pesanBroadcast) msgOptions.text = pesanBroadcast;
         if (lastMsgMedia) {
-          if (lastMsgMedia.type === 'image') msgOptions.image = { url: lastMsgMedia.url };
-          if (lastMsgMedia.type === 'video') msgOptions.video = { url: lastMsgMedia.url };
+          if (lastMsgMedia.type === 'image') msgOptions.image = lastMsgMedia.buffer;
+          if (lastMsgMedia.type === 'video') msgOptions.video = lastMsgMedia.buffer;
           if (pesanBroadcast) msgOptions.caption = pesanBroadcast;
         }
         await sock.sendMessage(jid, msgOptions);
@@ -95,8 +95,8 @@ async function startBroadcastLoop(sock, pesanBroadcast, sender, lastMsgMedia = n
           const msgOptions = {};
           if (pesanBroadcast) msgOptions.text = pesanBroadcast;
           if (lastMsgMedia) {
-            if (lastMsgMedia.type === 'image') msgOptions.image = { url: lastMsgMedia.url };
-            if (lastMsgMedia.type === 'video') msgOptions.video = { url: lastMsgMedia.url };
+            if (lastMsgMedia.type === 'image') msgOptions.image = lastMsgMedia.buffer;
+            if (lastMsgMedia.type === 'video') msgOptions.video = lastMsgMedia.buffer;
             if (pesanBroadcast) msgOptions.caption = pesanBroadcast;
           }
           await sock.sendMessage(jid, msgOptions);
@@ -105,12 +105,7 @@ async function startBroadcastLoop(sock, pesanBroadcast, sender, lastMsgMedia = n
           console.error(`❌ Gagal broadcast ke ${jid}:`, err.message); 
         }
 
-        const totalDelay = randomDelay();
-        const step = 100;
-        for (let elapsed = 0; elapsed < totalDelay; elapsed += step) {
-          if (!broadcastActive) break;
-          await new Promise(r => setTimeout(r, step));
-        }
+        await new Promise(r => setTimeout(r, randomDelay()));
         if (!broadcastActive) break;
       }
 
@@ -119,11 +114,8 @@ async function startBroadcastLoop(sock, pesanBroadcast, sender, lastMsgMedia = n
       await sock.sendMessage(sender, { text: `📢 Loop selesai, menunggu ${config.delay_loop} menit...` });
       console.log(`⏳ Menunggu ${config.delay_loop} menit sebelum loop berikutnya...`);
 
-      const totalLoopDelay = config.delay_loop * 60 * 1000;
-      const step = 1000;
-      for (let elapsed = 0; elapsed < totalLoopDelay; elapsed += step) {
-        if (!broadcastActive) break;
-        await new Promise(r => setTimeout(r, step));
+      if (broadcastActive) {
+        await new Promise(r => setTimeout(r, config.delay_loop * 60 * 1000));
       }
 
     } catch (err) {
@@ -211,15 +203,15 @@ async function startSock() {
         else if (msg.message?.extendedTextMessage?.text) pesan = msg.message.extendedTextMessage.text;
         else if (msg.message?.imageMessage?.caption) {
           pesan = msg.message.imageMessage.caption;
-          lastMsgMedia = { type: 'image', url: await sock.downloadMediaMessage(msg) };
+          lastMsgMedia = { type: 'image', buffer: await sock.downloadMediaMessage(msg) };
         } else if (msg.message?.videoMessage?.caption) {
           pesan = msg.message.videoMessage.caption;
-          lastMsgMedia = { type: 'video', url: await sock.downloadMediaMessage(msg) };
+          lastMsgMedia = { type: 'video', buffer: await sock.downloadMediaMessage(msg) };
         }
       } catch { continue; }
 
       if (jid.endsWith('@g.us') && !fromMe) continue;
-      if (!sender.includes(config.owner_number.replace('@s.whatsapp.net','')) && !fromMe) continue;
+      if (sender !== config.owner_number && !fromMe) continue;
 
       const reply = async text => await sock.sendMessage(jid, { text });
       if (!pesan.startsWith('.')) continue;
@@ -330,9 +322,9 @@ startSock();
 
 process.on('unhandledRejection', reason => {
   console.error('⚠️ Unhandled Rejection:', reason);
-  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${reason}\n`);
+  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${reason?.stack || reason}\n`);
 });
 process.on('uncaughtException', err => {
   console.error('❌ Uncaught Exception:', err);
-  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${err}\n`);
+  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${err?.stack || err}\n`);
 });
