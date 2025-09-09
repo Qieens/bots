@@ -13,35 +13,34 @@ const clc = require('cli-color');
 // === CONFIG ===
 const CONFIG_FILE = 'config.json';
 let config = {
-  delay_loop: 15,
+  delay_loop: 15, // menit
   owner_number: '6281243027475@s.whatsapp.net',
   broadcast_text: ''
 };
 
-// Baca config jika ada, atau buat file baru jika belum ada
+// Baca config
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     config = JSON.parse(fs.readFileSync(CONFIG_FILE));
   } catch (err) {
-    console.error('❌ Gagal membaca config.json, menggunakan default', err.message);
-    saveConfig(); // buat file baru dengan default
+    console.error('❌ Gagal membaca config.json, menggunakan default:', err.message);
+    saveConfig();
   }
-} else {
-  saveConfig(); // buat file baru dengan default config
-}
+} else saveConfig();
 
-// Simpan config
 function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
   console.log('💾 Config tersimpan di config.json');
 }
 
-// Status broadcast
+// === STATUS ===
 let broadcastActive = false;
 let isLooping = false;
+let lastLoopTime = null;
 
-// Random delay helper (detik)
-const randomDelay = (min = 2, max = 5) => Math.floor(Math.random() * (max - min + 1) + min) * 1000;
+// Random delay (ms)
+const randomDelay = (min = 2, max = 5) =>
+  Math.floor(Math.random() * (max - min + 1) + min) * 1000;
 
 // === BROADCAST SEKALI ===
 async function Broadcastonce(sock, pesanBroadcast, sender, lastMsgMedia = null) {
@@ -56,8 +55,8 @@ async function Broadcastonce(sock, pesanBroadcast, sender, lastMsgMedia = null) 
         const msgOptions = {};
         if (pesanBroadcast) msgOptions.text = pesanBroadcast;
         if (lastMsgMedia) {
-          if (lastMsgMedia.type === 'image') msgOptions.image = lastMsgMedia.buffer;
-          if (lastMsgMedia.type === 'video') msgOptions.video = lastMsgMedia.buffer;
+          if (lastMsgMedia.type === 'image') msgOptions.image = { url: lastMsgMedia.url };
+          if (lastMsgMedia.type === 'video') msgOptions.video = { url: lastMsgMedia.url };
           if (pesanBroadcast) msgOptions.caption = pesanBroadcast;
         }
         await sock.sendMessage(jid, msgOptions);
@@ -91,31 +90,42 @@ async function startBroadcastLoop(sock, pesanBroadcast, sender, lastMsgMedia = n
       for (const jid of groupJids) {
         if (!broadcastActive) break;
 
-        try { 
+        try {
           const msgOptions = {};
           if (pesanBroadcast) msgOptions.text = pesanBroadcast;
           if (lastMsgMedia) {
-            if (lastMsgMedia.type === 'image') msgOptions.image = lastMsgMedia.buffer;
-            if (lastMsgMedia.type === 'video') msgOptions.video = lastMsgMedia.buffer;
+            if (lastMsgMedia.type === 'image') msgOptions.image = { url: lastMsgMedia.url };
+            if (lastMsgMedia.type === 'video') msgOptions.video = { url: lastMsgMedia.url };
             if (pesanBroadcast) msgOptions.caption = pesanBroadcast;
           }
           await sock.sendMessage(jid, msgOptions);
-          console.log(`✅ Broadcast ke ${jid}`); 
-        } catch (err) { 
-          console.error(`❌ Gagal broadcast ke ${jid}:`, err.message); 
+          console.log(`✅ Broadcast ke ${jid}`);
+        } catch (err) {
+          console.error(`❌ Gagal broadcast ke ${jid}:`, err.message);
         }
 
-        await new Promise(r => setTimeout(r, randomDelay()));
+        const totalDelay = randomDelay();
+        const step = 100;
+        for (let elapsed = 0; elapsed < totalDelay; elapsed += step) {
+          if (!broadcastActive) break;
+          await new Promise(r => setTimeout(r, step));
+        }
         if (!broadcastActive) break;
       }
 
       if (!broadcastActive) break;
 
+      // Catat waktu loop selesai
+      lastLoopTime = Date.now();
+
       await sock.sendMessage(sender, { text: `📢 Loop selesai, menunggu ${config.delay_loop} menit...` });
       console.log(`⏳ Menunggu ${config.delay_loop} menit sebelum loop berikutnya...`);
 
-      if (broadcastActive) {
-        await new Promise(r => setTimeout(r, config.delay_loop * 60 * 1000));
+      const totalLoopDelay = config.delay_loop * 60 * 1000;
+      const step = 1000;
+      for (let elapsed = 0; elapsed < totalLoopDelay; elapsed += step) {
+        if (!broadcastActive) break;
+        await new Promise(r => setTimeout(r, step));
       }
 
     } catch (err) {
@@ -125,7 +135,6 @@ async function startBroadcastLoop(sock, pesanBroadcast, sender, lastMsgMedia = n
     }
   }
 
-  broadcastActive = false;
   isLooping = false;
   console.log('⏹️ Broadcast loop dihentikan');
 }
@@ -142,7 +151,7 @@ async function handleJoinCommand(sock, sender, pesan) {
     try {
       const code = link.split('/').pop();
       const res = await sock.groupAcceptInvite(code);
-      await sock.sendMessage(sender, { text: `✅ Berhasil join grup (${i+1}/${links.length})\nID: ${res}` });
+      await sock.sendMessage(sender, { text: `✅ Berhasil join grup (${i + 1}/${links.length})\nID: ${res}` });
       console.log(`✅ Bot join link: ${link}`);
     } catch (err) {
       await sock.sendMessage(sender, { text: `❌ Gagal join link: ${link}\nAlasan: ${err.message}` });
@@ -186,7 +195,7 @@ async function handleRefreshGrup(sock, sender) {
 async function startSock() {
   const { state, saveCreds } = await useMultiFileAuthState('session');
   const { version } = await fetchLatestBaileysVersion();
-  const sock = makeWASocket({ version, logger: pino({ level:'silent' }), auth: state, printQRInTerminal: false });
+  const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, printQRInTerminal: false });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
@@ -195,23 +204,22 @@ async function startSock() {
       const fromMe = msg.key.fromMe;
       const sender = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
 
-      // Ambil pesan / caption media
       let pesan = '';
       let lastMsgMedia = null;
-      try { 
+      try {
         if (msg.message.conversation) pesan = msg.message.conversation;
         else if (msg.message?.extendedTextMessage?.text) pesan = msg.message.extendedTextMessage.text;
         else if (msg.message?.imageMessage?.caption) {
           pesan = msg.message.imageMessage.caption;
-          lastMsgMedia = { type: 'image', buffer: await sock.downloadMediaMessage(msg) };
+          lastMsgMedia = { type: 'image', url: await sock.downloadMediaMessage(msg) };
         } else if (msg.message?.videoMessage?.caption) {
           pesan = msg.message.videoMessage.caption;
-          lastMsgMedia = { type: 'video', buffer: await sock.downloadMediaMessage(msg) };
+          lastMsgMedia = { type: 'video', url: await sock.downloadMediaMessage(msg) };
         }
       } catch { continue; }
 
       if (jid.endsWith('@g.us') && !fromMe) continue;
-      if (sender !== config.owner_number && !fromMe) continue;
+      if (!sender.includes(config.owner_number.replace('@s.whatsapp.net', '')) && !fromMe) continue;
 
       const reply = async text => await sock.sendMessage(jid, { text });
       if (!pesan.startsWith('.')) continue;
@@ -242,14 +250,14 @@ async function startSock() {
           break;
 
         case 'jpm':
-          if (!config.broadcast_text && !lastMsgMedia) 
-              return reply('⚠️ Silakan tambahkan teks broadcast terlebih dahulu menggunakan .teks atau kirim media dengan caption perintah .teks');
+          if (!config.broadcast_text && !lastMsgMedia)
+            return reply('⚠️ Silakan tambahkan teks broadcast terlebih dahulu menggunakan .teks atau kirim media dengan caption perintah .teks');
           await Broadcastonce(sock, config.broadcast_text, sender, lastMsgMedia);
           break;
 
         case 'autojpm':
-          if (!config.broadcast_text && !lastMsgMedia) 
-              return reply('⚠️ Silakan tambahkan teks broadcast terlebih dahulu menggunakan .teks atau kirim media dengan caption perintah .teks');
+          if (!config.broadcast_text && !lastMsgMedia)
+            return reply('⚠️ Silakan tambahkan teks broadcast terlebih dahulu menggunakan .teks atau kirim media dengan caption perintah .teks');
           if (broadcastActive) return reply('❌ Broadcast sudah aktif!');
           broadcastActive = true;
           await reply(`✅ Auto Jpm berhasil diaktifkan. Pesan akan dikirim setiap ${config.delay_loop} menit`);
@@ -297,6 +305,7 @@ async function startSock() {
     }
   });
 
+  // Pairing
   if (!sock.authState.creds.registered) {
     const phoneNumber = await new Promise(resolve => {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -306,13 +315,39 @@ async function startSock() {
     console.log(clc.yellow.bold(`🔑 Kode pairing: ${code}`));
   }
 
+  // Connection handler
   sock.ev.on('connection.update', update => {
     const { connection, lastDisconnect } = update;
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
-      if (reason === DisconnectReason.loggedOut) console.log('❌ Logged out, hapus session dan scan ulang');
-      else { console.log('🔄 Reconnect...'); startSock(); }
-    } else if (connection === 'open') console.log('✅ Bot berhasil connect');
+      if (reason === DisconnectReason.loggedOut) {
+        broadcastActive = false;
+        console.log('❌ Logged out, hapus session dan scan ulang');
+      } else {
+        console.log('🔄 Reconnect...');
+        startSock();
+      }
+    } else if (connection === 'open') {
+      console.log('✅ Bot berhasil connect');
+      // 🔄 Lanjutkan loop sesuai sisa interval
+      if (broadcastActive && !isLooping) {
+        if (lastLoopTime) {
+          const elapsed = Date.now() - lastLoopTime;
+          const totalDelay = config.delay_loop * 60 * 1000;
+          const remaining = Math.max(totalDelay - elapsed, 0);
+
+          console.log(`⏳ Menunggu ${Math.ceil(remaining / 1000)} detik sebelum loop berikutnya...`);
+
+          setTimeout(() => {
+            if (broadcastActive && !isLooping) {
+              startBroadcastLoop(sock, config.broadcast_text, config.owner_number);
+            }
+          }, remaining);
+        } else {
+          startBroadcastLoop(sock, config.broadcast_text, config.owner_number);
+        }
+      }
+    }
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -320,11 +355,12 @@ async function startSock() {
 
 startSock();
 
+// Error handler
 process.on('unhandledRejection', reason => {
   console.error('⚠️ Unhandled Rejection:', reason);
-  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${reason?.stack || reason}\n`);
+  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${reason}\n`);
 });
 process.on('uncaughtException', err => {
   console.error('❌ Uncaught Exception:', err);
-  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${err?.stack || err}\n`);
+  fs.appendFileSync('error.log', `[${new Date().toISOString()}] ${err}\n`);
 });
