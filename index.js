@@ -219,7 +219,7 @@ async function startSock() {
       } catch { continue; }
 
       if (jid.endsWith('@g.us') && !fromMe) continue;
-      if (!sender.includes(config.owner_number.replace('@s.whatsapp.net', '')) && !fromMe) continue;
+      if (!fromMe && ! ( (sender || '').includes( (config.owner_number || '').replace('@s.whatsapp.net','') ) ) ) continue;
 
       const reply = async text => await sock.sendMessage(jid, { text });
       if (!pesan.startsWith('.')) continue;
