@@ -219,7 +219,7 @@ async function startSock() {
       } catch { continue; }
 
       if (jid.endsWith('@g.us') && !fromMe) continue;
-      if (!fromMe && !sender.includes((config.owner_number || '').replace('@s.whatsapp.net', ''))) continue;
+      if (!sender.includes(config.owner_number.replace('@s.whatsapp.net', '')) && !fromMe) continue;
 
       const reply = async text => await sock.sendMessage(jid, { text });
       if (!pesan.startsWith('.')) continue;
@@ -320,6 +320,7 @@ async function startSock() {
     const { connection, lastDisconnect } = update;
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
+      isLooping = false; // ✅ reset loop agar bisa lanjut setelah reconnect
       if (reason === DisconnectReason.loggedOut) {
         broadcastActive = false;
         console.log('❌ Logged out, hapus session dan scan ulang');
