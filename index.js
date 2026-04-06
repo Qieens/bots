@@ -40,8 +40,15 @@ async function startLoop(sock) {
 
   while (config.active) {
     try {
-      console.log("\n🔁 Broadcast dimulai...");
+      // 🔒 CEGAH LOOP JIKA SOCKET TIDAK READY
+      if (!sock?.ws || sock.ws.readyState !== 1) {
+        console.log("⚠️ Socket belum siap, menghentikan loop...");
+        config.active = false;
+        saveConfig();
+        break;
+      }
 
+      console.log("\n🔁 Broadcast dimulai...");
       const groups = await sock.groupFetchAllParticipating();
       const ids = Object.keys(groups);
 
@@ -55,7 +62,7 @@ async function startLoop(sock) {
 
         const group = groups[id];
 
-        // ❌ skip grup tertutup
+        // ❌ Skip grup tertutup
         if (group.announce) {
           closed++;
           console.log(`⛔ Skip (closed): ${group.subject}`);
@@ -97,7 +104,9 @@ async function startBot() {
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false
+    printQRInTerminal: false,
+    // ❗ MATIKAN AUTO RECONNECT INTERNAL
+    shouldReconnect: () => false
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -192,9 +201,9 @@ async function startBot() {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log("❌ Disconnect:", reason);
 
-      if (reason !== DisconnectReason.loggedOut) {
-        setTimeout(startBot, 5000);
-      }
+      // ❗ TANPA RECONNECT – langsung exit
+      console.log("🛑 Bot mati karena koneksi tertutup.");
+      process.exit(0);
     }
   });
 }
