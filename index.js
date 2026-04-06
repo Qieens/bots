@@ -18,95 +18,101 @@ let config = {
 
 const CONFIG_FILE = "config.json";
 
+// load config
 if (fs.existsSync(CONFIG_FILE)) {
-  try { config = JSON.parse(fs.readFileSync(CONFIG_FILE)); } catch {}
+  try {
+    config = JSON.parse(fs.readFileSync(CONFIG_FILE));
+  } catch {}
 }
 
 function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+// ================= HELPER =================
 const delay = ms => new Promise(r => setTimeout(r, ms));
 let isLooping = false;
 
-// ================= BROADCAST =================
+// ================= BROADCAST LOOP =================
 async function startLoop(sock) {
   if (isLooping) return;
   isLooping = true;
 
   while (config.active) {
-    if (!sock.ws || sock.ws.readyState !== 1) {
-      console.log("⚠️ Socket mati, hentikan loop.");
-      config.active = false;
-      saveConfig();
-      break;
-    }
+    try {
+      console.log("\n🔁 Broadcast dimulai...");
 
-    console.log("\n🔁 Broadcast dimulai...");
-    const groups = await sock.groupFetchAllParticipating();
-    const ids = Object.keys(groups);
+      const groups = await sock.groupFetchAllParticipating();
+      const ids = Object.keys(groups);
 
-    let open = 0, closed = 0;
+      let open = 0;
+      let closed = 0;
 
-    for (let id of ids) {
-      if (!config.active) break;
+      console.log(`📊 Total grup: ${ids.length}`);
 
-      const group = groups[id];
+      for (let id of ids) {
+        if (!config.active) break;
 
-      if (group.announce) {
-        closed++;
-        console.log(`⛔ Closed: ${group.subject}`);
-        continue;
+        const group = groups[id];
+
+        // ❌ skip grup tertutup
+        if (group.announce) {
+          closed++;
+          console.log(`⛔ Skip (closed): ${group.subject}`);
+          continue;
+        }
+
+        open++;
+
+        try {
+          await sock.sendMessage(id, { text: config.text });
+          console.log(`✅ (open) ${group.subject}`);
+        } catch (err) {
+          console.log(`❌ ${group.subject}:`, err.message);
+        }
+
+        await delay(config.delayGroup);
       }
 
-      open++;
-      try {
-        await sock.sendMessage(id, { text: config.text });
-        console.log(`✅ ${group.subject}`);
-      } catch (err) {
-        console.log(`❌ ${group.subject}:`, err.message);
-      }
+      console.log(`📊 Open: ${open} | Closed: ${closed}`);
+      console.log(`⏳ Tunggu ${config.delayLoop / 60000} menit`);
 
-      await delay(config.delayGroup);
+      await delay(config.delayLoop);
+
+    } catch (err) {
+      console.log("❌ Error:", err.message);
+      await delay(5000);
     }
-
-    console.log(`📊 Open: ${open} | Closed: ${closed}`);
-    await delay(config.delayLoop);
   }
 
   isLooping = false;
 }
 
-// ================= START BOT =================
+// ================= START =================
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
-
-  // ❗ Saat belum registered → reconnect ON
-  // ❗ Setelah registered → reconnect OFF
-  const INITIAL_RECONNECT = !state.creds.registered;
 
   const sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    shouldReconnect: () => INITIAL_RECONNECT
+    printQRInTerminal: false
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on('creds.update', saveCreds);
 
   // ================= PAIRING =================
-  if (!state.creds.registered) {
+  if (!sock.authState.creds.registered) {
     const readline = require("readline").createInterface({
       input: process.stdin,
       output: process.stdout
     });
 
     const nomor = await new Promise(resolve => {
-      readline.question("📱 Masukkan nomor (62xxx): ", ans => {
+      readline.question("📱 Masukkan nomor (62xxx): ", answer => {
         readline.close();
-        resolve(ans);
+        resolve(answer);
       });
     });
 
@@ -131,7 +137,7 @@ async function startBot() {
     const args = text.trim().split(" ");
     const cmd = args[0].toLowerCase();
 
-    const reply = txt => sock.sendMessage(jid, { text: txt });
+    const reply = (txt) => sock.sendMessage(jid, { text: txt });
 
     switch (cmd) {
       case ".on":
@@ -159,37 +165,39 @@ async function startBot() {
       case ".delay":
         const menit = parseInt(args[1]);
         if (isNaN(menit)) return reply("❌ Contoh: .delay 10");
-        config.delayLoop = menit * 60000;
+        config.delayLoop = menit * 60 * 1000;
         saveConfig();
-        reply(`✅ Delay ${menit} menit`);
+        reply(`✅ Delay diubah ke ${menit} menit`);
         break;
 
       case ".status":
         reply(
-          `📊 STATUS\n\nAktif: ${config.active}\nDelay: ${config.delayLoop / 60000} menit\nPesan: ${config.text}`
+          `📊 STATUS\n\n` +
+          `Aktif: ${config.active ? "ON" : "OFF"}\n` +
+          `Delay: ${config.delayLoop / 60000} menit\n` +
+          `Pesan: ${config.text}`
         );
         break;
     }
   });
 
   // ================= CONNECTION =================
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
     if (connection === "open") {
       console.log("✅ Connected");
-
-      // setelah connected → matikan reconnect
-      sock.shouldReconnect = () => false;
-
       if (config.active) startLoop(sock);
     }
 
     if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log("❌ Disconnect:", reason);
-      console.log("🛑 Bot berhenti.");
-      process.exit(0);
+
+      if (reason !== DisconnectReason.loggedOut) {
+        setTimeout(startBot, 5000);
+      }
     }
   });
 }
 
+// ================= RUN =================
 startBot();
