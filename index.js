@@ -18,7 +18,6 @@ let config = {
 
 const CONFIG_FILE = "config.json";
 
-// load config
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     config = JSON.parse(fs.readFileSync(CONFIG_FILE));
@@ -29,11 +28,10 @@ function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-// ================= HELPER =================
 const delay = ms => new Promise(r => setTimeout(r, ms));
 let isLooping = false;
 
-// ================= BROADCAST LOOP =================
+// =============== BROADCAST LOOP =================
 async function startLoop(sock) {
   if (isLooping) return;
   isLooping = true;
@@ -45,8 +43,7 @@ async function startLoop(sock) {
       const groups = await sock.groupFetchAllParticipating();
       const ids = Object.keys(groups);
 
-      let open = 0;
-      let closed = 0;
+      let open = 0, closed = 0;
 
       console.log(`📊 Total grup: ${ids.length}`);
 
@@ -55,7 +52,6 @@ async function startLoop(sock) {
 
         const group = groups[id];
 
-        // ❌ skip grup tertutup
         if (group.announce) {
           closed++;
           console.log(`⛔ Skip (closed): ${group.subject}`);
@@ -88,8 +84,8 @@ async function startLoop(sock) {
   isLooping = false;
 }
 
-// ================= START =================
-async function startBot() {
+// =============== START BOT =================
+async function startBot(retryCount = 0) {
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
 
@@ -100,7 +96,7 @@ async function startBot() {
     printQRInTerminal: false
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on("creds.update", saveCreds);
 
   // ================= PAIRING =================
   if (!sock.authState.creds.registered) {
@@ -181,10 +177,12 @@ async function startBot() {
     }
   });
 
-  // ================= CONNECTION =================
-  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+  // =============== AUTO RECONNECT AMAN (STABLE PRO) ===============
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
     if (connection === "open") {
       console.log("✅ Connected");
+      retryCount = 0; // reset retry
+
       if (config.active) startLoop(sock);
     }
 
@@ -192,12 +190,20 @@ async function startBot() {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log("❌ Disconnect:", reason);
 
-      if (reason !== DisconnectReason.loggedOut) {
-        setTimeout(startBot, 5000);
+      if (reason === DisconnectReason.loggedOut) {
+        console.log("🛑 Session invalid. Hapus folder session dan login ulang.");
+        process.exit(0);
       }
+
+      // exponential backoff reconnect (maks 30 detik)
+      const delayMs = Math.min(3000 + retryCount * 3000, 30000);
+      console.log(`🔄 Reconnect dalam ${delayMs / 1000} detik...`);
+
+      setTimeout(() => startBot(retryCount + 1), delayMs);
     }
   });
+
+  return sock;
 }
 
-// ================= RUN =================
 startBot();
