@@ -10,7 +10,8 @@ const fs = require('fs');
 
 // ================= CONFIG =================
 let config = {
-  delayGroup: [5000, 10000], // random delay
+  text: "🔥 PROMOTE DISINI 🔥",
+  delayGroup: [5000, 10000],
   delayLoop: 10 * 60 * 1000,
   active: false,
   maxPerSession: 25
@@ -22,6 +23,14 @@ if (fs.existsSync(CONFIG_FILE)) {
   try {
     config = JSON.parse(fs.readFileSync(CONFIG_FILE));
   } catch {}
+}
+
+// 🔥 VALIDASI CONFIG (ANTI ERROR)
+if (!Array.isArray(config.delayGroup)) {
+  config.delayGroup = [5000, 10000];
+}
+if (!config.text) {
+  config.text = "🔥 PROMOTE DISINI 🔥";
 }
 
 function saveConfig() {
@@ -36,22 +45,7 @@ const getRandomDelay = () => {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
-// ================= TEXT VARIATION =================
-const textVariations = [
-  "🔥 PROMOTE DISINI 🔥",
-  "🚀 PROMO DI SINI GAS!",
-  "💰 Jual beli aman disini!",
-  "📢 Open promote, join sekarang!",
-  "🔥 Market aktif, yuk masuk!"
-];
-
-const getRandomText = () => {
-  const base = textVariations[Math.floor(Math.random() * textVariations.length)];
-  const noise = ["", ".", "..", "🔥", "🚀"];
-  return base + " " + noise[Math.floor(Math.random() * noise.length)];
-};
-
-// ================= QUEUE SYSTEM =================
+// ================= QUEUE =================
 let queue = [];
 let isProcessing = false;
 let isReady = false;
@@ -89,7 +83,7 @@ async function processQueue(sock) {
       if (!id) continue;
 
       try {
-        await sock.sendMessage(id, { text: getRandomText() });
+        await sock.sendMessage(id, { text: config.text });
         console.log(`✅ Kirim ke ${id}`);
       } catch (err) {
         console.log(`❌ Gagal ${id}:`, err.message);
@@ -97,7 +91,7 @@ async function processQueue(sock) {
 
       sentCount++;
 
-      // limit per sesi (anti spam)
+      // 🔥 LIMIT PER SESSION
       if (sentCount >= config.maxPerSession) {
         console.log("🛑 Limit tercapai, istirahat 10 menit...");
         sentCount = 0;
@@ -131,14 +125,14 @@ async function startBot(retry = 0) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ================= READY FIX =================
+  // ================= CONNECTION =================
   sock.ev.on("connection.update", ({ connection, lastDisconnect, receivedPendingNotifications }) => {
 
     if (connection === "open") {
       console.log("✅ Connected");
     }
 
-    // 🔥 ini kunci agar tidak stuck
+    // 🔥 FIX READY
     if (receivedPendingNotifications) {
       isReady = true;
       console.log("🔥 Socket siap digunakan!");
@@ -189,6 +183,7 @@ async function startBot(retry = 0) {
     if (!msg.message || !msg.key.fromMe) return;
 
     const jid = msg.key.remoteJid;
+
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
@@ -216,9 +211,19 @@ async function startBot(retry = 0) {
         reply("🛑 Broadcast OFF");
         break;
 
+      case ".teks":
+        const newText = text.slice(6).trim();
+        if (!newText) return reply("❌ Contoh: .teks halo semua");
+
+        config.text = newText;
+        saveConfig();
+        reply("✅ Teks berhasil diubah");
+        break;
+
       case ".delay":
         const m = parseInt(args[1]);
         if (isNaN(m)) return reply("❌ Contoh: .delay 10");
+
         config.delayLoop = m * 60000;
         saveConfig();
         reply(`✅ Delay loop ${m} menit`);
@@ -228,7 +233,8 @@ async function startBot(retry = 0) {
         reply(
           `📊 STATUS\n\n` +
           `Aktif: ${config.active ? "ON" : "OFF"}\n` +
-          `Delay: ${config.delayLoop / 60000} menit`
+          `Delay: ${config.delayLoop / 60000} menit\n` +
+          `Pesan: ${config.text}`
         );
         break;
     }
