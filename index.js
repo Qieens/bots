@@ -12,9 +12,8 @@ const fs = require('fs');
 let config = {
   text: "🔥 PROMOTE DISINI 🔥",
   delayGroup: [5000, 10000],
-  delayLoop: 30 * 60 * 1000, // default 30 menit
-  active: false,
-  maxPerSession: 25
+  delayLoop: 30 * 60 * 1000,
+  active: false
 };
 
 const CONFIG_FILE = "config.json";
@@ -43,7 +42,6 @@ const getRandomDelay = () => {
 // ================= STATE =================
 let isProcessing = false;
 let isReady = false;
-let sentCount = 0;
 let currentSock = null;
 
 // ================= PROCESS =================
@@ -55,12 +53,6 @@ async function processQueue(sock) {
 
   while (config.active) {
     try {
-      if (!sock || !sock.ws || sock.ws.readyState !== 1) {
-        console.log("⏳ Socket belum ready...");
-        await delay(3000);
-        continue;
-      }
-
       if (!isReady) {
         console.log("⏳ Menunggu koneksi...");
         await delay(3000);
@@ -87,15 +79,6 @@ async function processQueue(sock) {
           console.log(`✅ ${id}`);
         } catch (err) {
           console.log(`❌ ${id}:`, err?.message || err);
-        }
-
-        sentCount++;
-
-        // anti spam limit
-        if (sentCount >= config.maxPerSession) {
-          console.log("🛑 Cooldown 10 menit...");
-          sentCount = 0;
-          await delay(10 * 60 * 1000);
         }
 
         const d = getRandomDelay();
@@ -128,7 +111,6 @@ async function startBot() {
 
   isProcessing = false;
   isReady = false;
-  sentCount = 0;
 
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
@@ -250,7 +232,6 @@ async function startBot() {
           `Aktif: ${config.active ? "ON" : "OFF"}\n` +
           `Delay Loop: ${config.delayLoop / 60000} menit\n` +
           `Delay Grup: ${config.delayGroup[0] / 1000}-${config.delayGroup[1] / 1000} detik\n` +
-          `Max/Sesi: ${config.maxPerSession}\n` +
           `Processing: ${isProcessing}`
         );
         break;
