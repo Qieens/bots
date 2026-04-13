@@ -11,7 +11,7 @@ const fs = require('fs');
 // ================= CONFIG =================
 let config = {
   text: "🔥 PROMOTE DISINI 🔥",
-  delayGroup: 3000,
+  delayGroup: 5000, // diperbesar (anti ban)
   delayLoop: 10 * 60 * 1000,
   active: false
 };
@@ -30,14 +30,27 @@ function saveConfig() {
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 let isLooping = false;
+let isConnected = false;
 
-// =============== BROADCAST LOOP =================
+// ================= CHECK SOCKET =================
+const isSocketReady = (sock) => {
+  return sock?.ws && sock.ws.readyState === 1;
+};
+
+// ================= BROADCAST LOOP =================
 async function startLoop(sock) {
   if (isLooping) return;
   isLooping = true;
 
   while (config.active) {
     try {
+      // tunggu koneksi siap
+      if (!isConnected || !isSocketReady(sock)) {
+        console.log("⏳ Menunggu koneksi siap...");
+        await delay(5000);
+        continue;
+      }
+
       console.log("\n🔁 Broadcast dimulai...");
 
       const groups = await sock.groupFetchAllParticipating();
@@ -49,6 +62,11 @@ async function startLoop(sock) {
 
       for (let id of ids) {
         if (!config.active) break;
+
+        if (!isConnected || !isSocketReady(sock)) {
+          console.log("⚠️ Koneksi terputus saat broadcast, pause...");
+          break;
+        }
 
         const group = groups[id];
 
@@ -73,7 +91,13 @@ async function startLoop(sock) {
       console.log(`📊 Open: ${open} | Closed: ${closed}`);
       console.log(`⏳ Tunggu ${config.delayLoop / 60000} menit`);
 
-      await delay(config.delayLoop);
+      // delay tapi tetap cek koneksi tiap 5 detik
+      let waitTime = 0;
+      while (waitTime < config.delayLoop && config.active) {
+        if (!isConnected) break;
+        await delay(5000);
+        waitTime += 5000;
+      }
 
     } catch (err) {
       console.log("❌ Error:", err.message);
@@ -84,8 +108,8 @@ async function startLoop(sock) {
   isLooping = false;
 }
 
-// =============== START BOT =================
-async function startBot(retryCount = 0) {
+// ================= START BOT =================
+async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
 
@@ -177,33 +201,37 @@ async function startBot(retryCount = 0) {
     }
   });
 
-  // =============== AUTO RECONNECT AMAN (STABLE PRO) ===============
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+  // ================= CONNECTION =================
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+
     if (connection === "open") {
       console.log("✅ Connected");
-      retryCount = 0; // reset retry
+      isConnected = true;
 
-      if (config.active) startLoop(sock);
+      // kasih delay biar auth stabil
+      setTimeout(() => {
+        if (config.active) startLoop(sock);
+      }, 5000);
     }
 
     if (connection === "close") {
+      isConnected = false;
+
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log("❌ Disconnect:", reason);
 
       if (reason === DisconnectReason.loggedOut) {
-        console.log("🛑 Session invalid. Hapus folder session dan login ulang.");
+        console.log("🛑 Session invalid. Hapus folder session!");
         process.exit(0);
       }
 
-      // exponential backoff reconnect (maks 30 detik)
-      const delayMs = Math.min(3000 + retryCount * 3000, 30000);
-      console.log(`🔄 Reconnect dalam ${delayMs / 1000} detik...`);
+      // penting: destroy socket lama
+      try { sock.ws.close(); } catch {}
 
-      setTimeout(() => startBot(retryCount + 1), delayMs);
+      console.log("🔄 Reconnecting...");
+      setTimeout(startBot, 5000);
     }
   });
-
-  return sock;
 }
 
 startBot();
