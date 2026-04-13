@@ -12,7 +12,7 @@ const fs = require('fs');
 let config = {
   text: "🔥 PROMOTE DISINI 🔥",
   delayGroup: [5000, 10000],
-  delayLoop: 10 * 60 * 1000,
+  delayLoop: 30 * 60 * 1000, // default 30 menit
   active: false,
   maxPerSession: 25
 };
@@ -36,29 +36,15 @@ function saveConfig() {
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const getRandomDelay = () => {
-  if (!Array.isArray(config.delayGroup)) return 7000;
   const [min, max] = config.delayGroup;
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
 // ================= STATE =================
-let queue = [];
 let isProcessing = false;
 let isReady = false;
 let sentCount = 0;
 let currentSock = null;
-let sentCache = new Set();
-
-// ================= QUEUE =================
-function shuffle(arr) {
-  return arr.sort(() => Math.random() - 0.5);
-}
-
-function buildQueue(groups) {
-  if (!groups) return [];
-  const ids = Object.keys(groups);
-  return shuffle(ids.filter(id => !groups[id]?.announce));
-}
 
 // ================= PROCESS =================
 async function processQueue(sock) {
@@ -76,51 +62,51 @@ async function processQueue(sock) {
       }
 
       if (!isReady) {
-        console.log("⏳ Menunggu sync...");
+        console.log("⏳ Menunggu koneksi...");
         await delay(3000);
         continue;
       }
 
-      // build queue
-      if (queue.length === 0) {
-        const groups = await sock.groupFetchAllParticipating().catch(() => null);
+      const groups = await sock.groupFetchAllParticipating().catch(() => null);
 
-        if (!groups) {
-          console.log("⚠️ Gagal ambil grup");
-          await delay(5000);
-          continue;
+      if (!groups) {
+        console.log("⚠️ Gagal ambil grup");
+        await delay(5000);
+        continue;
+      }
+
+      const ids = Object.keys(groups).filter(id => !groups[id]?.announce);
+
+      console.log(`📦 Broadcast ke ${ids.length} grup`);
+
+      for (let id of ids) {
+        if (!config.active) break;
+
+        try {
+          await sock.sendMessage(id, { text: config.text });
+          console.log(`✅ ${id}`);
+        } catch (err) {
+          console.log(`❌ ${id}:`, err?.message || err);
         }
 
-        queue = buildQueue(groups);
-        sentCache.clear(); // ✅ reset anti double
-        console.log(`📦 Queue baru: ${queue.length} grup`);
+        sentCount++;
+
+        // anti spam limit
+        if (sentCount >= config.maxPerSession) {
+          console.log("🛑 Cooldown 10 menit...");
+          sentCount = 0;
+          await delay(10 * 60 * 1000);
+        }
+
+        const d = getRandomDelay();
+        console.log(`⏳ Delay ${Math.floor(d / 1000)} detik`);
+        await delay(d);
       }
 
-      const id = queue.shift();
-      if (!id) continue;
+      console.log(`🛑 Selesai 1 batch`);
+      console.log(`⏳ Tunggu ${config.delayLoop / 60000} menit...\n`);
 
-      // ✅ anti duplicate send
-      if (sentCache.has(id)) continue;
-
-      try {
-        await sock.sendMessage(id, { text: config.text });
-        sentCache.add(id);
-        console.log(`✅ ${id}`);
-      } catch (err) {
-        console.log(`❌ ${id}:`, err?.message || err);
-      }
-
-      sentCount++;
-
-      if (sentCount >= config.maxPerSession) {
-        console.log("🛑 Cooldown 10 menit...");
-        sentCount = 0;
-        await delay(10 * 60 * 1000);
-      }
-
-      const d = getRandomDelay();
-      console.log(`⏳ Delay ${Math.floor(d / 1000)} detik`);
-      await delay(d);
+      await delay(config.delayLoop);
 
     } catch (err) {
       console.log("❌ Loop error:", err?.message || err);
@@ -128,25 +114,21 @@ async function processQueue(sock) {
     }
   }
 
-  console.log("🛑 Worker berhenti");
   isProcessing = false;
+  console.log("🛑 Worker berhenti");
 }
 
 // ================= START =================
 async function startBot() {
   console.log("🔄 Memulai bot...");
 
-  // ✅ kill socket lama
   if (currentSock) {
     try { currentSock.end(); } catch {}
   }
 
-  // reset state
-  queue = [];
-  sentCache.clear();
-  sentCount = 0;
   isProcessing = false;
   isReady = false;
+  sentCount = 0;
 
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
@@ -168,7 +150,7 @@ async function startBot() {
     if (connection === "open") {
       console.log("✅ Connected");
 
-      isReady = true; // ✅ FIX: tidak pakai receivedPendingNotifications
+      isReady = true;
 
       if (config.active && !isProcessing) {
         processQueue(sock);
@@ -183,7 +165,7 @@ async function startBot() {
       isProcessing = false;
 
       if (reason === DisconnectReason.loggedOut) {
-        console.log("🛑 Session logout! Hapus session.");
+        console.log("🛑 Session logout! Hapus folder session.");
         process.exit(0);
       }
 
@@ -252,11 +234,23 @@ async function startBot() {
         reply("✅ Teks diupdate");
         break;
 
+      case ".delay":
+        const menit = parseInt(args[1]);
+        if (isNaN(menit) || menit < 1) {
+          return reply("❌ Contoh: .delay 30");
+        }
+        config.delayLoop = menit * 60000;
+        saveConfig();
+        reply(`✅ Delay diubah ke ${menit} menit`);
+        break;
+
       case ".status":
         reply(
           `📊 STATUS\n\n` +
           `Aktif: ${config.active ? "ON" : "OFF"}\n` +
-          `Queue: ${queue.length}\n` +
+          `Delay Loop: ${config.delayLoop / 60000} menit\n` +
+          `Delay Grup: ${config.delayGroup[0] / 1000}-${config.delayGroup[1] / 1000} detik\n` +
+          `Max/Sesi: ${config.maxPerSession}\n` +
           `Processing: ${isProcessing}`
         );
         break;
