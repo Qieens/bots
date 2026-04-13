@@ -10,10 +10,10 @@ const fs = require('fs');
 
 // ================= CONFIG =================
 let config = {
-  text: "🔥 PROMOTE DISINI 🔥",
-  delayGroup: 5000, // diperbesar (anti ban)
+  delayGroup: [5000, 10000], // random delay
   delayLoop: 10 * 60 * 1000,
-  active: false
+  active: false,
+  maxPerSession: 25
 };
 
 const CONFIG_FILE = "config.json";
@@ -28,76 +28,85 @@ function saveConfig() {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
+// ================= HELPER =================
 const delay = ms => new Promise(r => setTimeout(r, ms));
-let isLooping = false;
-let isConnected = false;
 
-// ================= CHECK SOCKET =================
-const isSocketReady = (sock) => {
-  return sock?.ws && sock.ws.readyState === 1;
+const getRandomDelay = () => {
+  const [min, max] = config.delayGroup;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
-// ================= BROADCAST LOOP =================
-async function startLoop(sock) {
-  if (isLooping) return;
-  isLooping = true;
+// ================= TEXT VARIATION =================
+const textVariations = [
+  "🔥 PROMOTE DISINI 🔥",
+  "🚀 PROMO DI SINI GAS!",
+  "💰 Jual beli aman disini!",
+  "📢 Open promote, join sekarang!",
+  "🔥 Market aktif, yuk masuk!"
+];
+
+const getRandomText = () => {
+  const base = textVariations[Math.floor(Math.random() * textVariations.length)];
+  const noise = ["", ".", "..", "🔥", "🚀"];
+  return base + " " + noise[Math.floor(Math.random() * noise.length)];
+};
+
+// ================= QUEUE SYSTEM =================
+let queue = [];
+let isProcessing = false;
+let isReady = false;
+let sentCount = 0;
+
+function shuffle(arr) {
+  return arr.sort(() => Math.random() - 0.5);
+}
+
+function buildQueue(groups) {
+  const ids = Object.keys(groups);
+  return shuffle(ids.filter(id => !groups[id].announce));
+}
+
+// ================= PROCESS =================
+async function processQueue(sock) {
+  if (isProcessing) return;
+  isProcessing = true;
 
   while (config.active) {
     try {
-      // tunggu koneksi siap
-      if (!isConnected || !isSocketReady(sock)) {
+      if (!isReady) {
         console.log("⏳ Menunggu koneksi siap...");
-        await delay(5000);
+        await delay(3000);
         continue;
       }
 
-      console.log("\n🔁 Broadcast dimulai...");
-
-      const groups = await sock.groupFetchAllParticipating();
-      const ids = Object.keys(groups);
-
-      let open = 0, closed = 0;
-
-      console.log(`📊 Total grup: ${ids.length}`);
-
-      for (let id of ids) {
-        if (!config.active) break;
-
-        if (!isConnected || !isSocketReady(sock)) {
-          console.log("⚠️ Koneksi terputus saat broadcast, pause...");
-          break;
-        }
-
-        const group = groups[id];
-
-        if (group.announce) {
-          closed++;
-          console.log(`⛔ Skip (closed): ${group.subject}`);
-          continue;
-        }
-
-        open++;
-
-        try {
-          await sock.sendMessage(id, { text: config.text });
-          console.log(`✅ (open) ${group.subject}`);
-        } catch (err) {
-          console.log(`❌ ${group.subject}:`, err.message);
-        }
-
-        await delay(config.delayGroup);
+      if (queue.length === 0) {
+        const groups = await sock.groupFetchAllParticipating();
+        queue = buildQueue(groups);
+        console.log(`📦 Queue dibuat: ${queue.length} grup`);
       }
 
-      console.log(`📊 Open: ${open} | Closed: ${closed}`);
-      console.log(`⏳ Tunggu ${config.delayLoop / 60000} menit`);
+      const id = queue.shift();
+      if (!id) continue;
 
-      // delay tapi tetap cek koneksi tiap 5 detik
-      let waitTime = 0;
-      while (waitTime < config.delayLoop && config.active) {
-        if (!isConnected) break;
-        await delay(5000);
-        waitTime += 5000;
+      try {
+        await sock.sendMessage(id, { text: getRandomText() });
+        console.log(`✅ Kirim ke ${id}`);
+      } catch (err) {
+        console.log(`❌ Gagal ${id}:`, err.message);
       }
+
+      sentCount++;
+
+      // limit per sesi (anti spam)
+      if (sentCount >= config.maxPerSession) {
+        console.log("🛑 Limit tercapai, istirahat 10 menit...");
+        sentCount = 0;
+        await delay(10 * 60 * 1000);
+      }
+
+      const d = getRandomDelay();
+      console.log(`⏳ Delay ${Math.floor(d / 1000)} detik`);
+      await delay(d);
 
     } catch (err) {
       console.log("❌ Error:", err.message);
@@ -105,11 +114,11 @@ async function startLoop(sock) {
     }
   }
 
-  isLooping = false;
+  isProcessing = false;
 }
 
-// ================= START BOT =================
-async function startBot() {
+// ================= START =================
+async function startBot(retry = 0) {
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
 
@@ -120,7 +129,41 @@ async function startBot() {
     printQRInTerminal: false
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on('creds.update', saveCreds);
+
+  // ================= READY FIX =================
+  sock.ev.on("connection.update", ({ connection, lastDisconnect, receivedPendingNotifications }) => {
+
+    if (connection === "open") {
+      console.log("✅ Connected");
+    }
+
+    // 🔥 ini kunci agar tidak stuck
+    if (receivedPendingNotifications) {
+      isReady = true;
+      console.log("🔥 Socket siap digunakan!");
+
+      if (config.active) processQueue(sock);
+    }
+
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      console.log("❌ Disconnect:", reason);
+
+      isReady = false;
+      isProcessing = false;
+
+      if (reason === DisconnectReason.loggedOut) {
+        console.log("🛑 Session logout, hapus folder session!");
+        process.exit();
+      }
+
+      const delayReconnect = Math.min(3000 + retry * 3000, 30000);
+      console.log(`🔄 Reconnect dalam ${delayReconnect / 1000} detik...`);
+
+      setTimeout(() => startBot(retry + 1), delayReconnect);
+    }
+  });
 
   // ================= PAIRING =================
   if (!sock.authState.creds.registered) {
@@ -146,7 +189,6 @@ async function startBot() {
     if (!msg.message || !msg.key.fromMe) return;
 
     const jid = msg.key.remoteJid;
-
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
@@ -165,7 +207,7 @@ async function startBot() {
         config.active = true;
         saveConfig();
         reply("✅ Broadcast ON");
-        startLoop(sock);
+        processQueue(sock);
         break;
 
       case ".off":
@@ -174,64 +216,24 @@ async function startBot() {
         reply("🛑 Broadcast OFF");
         break;
 
-      case ".teks":
-        const newText = text.slice(6).trim();
-        if (!newText) return reply("❌ Isi teks kosong");
-        config.text = newText;
-        saveConfig();
-        reply("✅ Teks diupdate");
-        break;
-
       case ".delay":
-        const menit = parseInt(args[1]);
-        if (isNaN(menit)) return reply("❌ Contoh: .delay 10");
-        config.delayLoop = menit * 60 * 1000;
+        const m = parseInt(args[1]);
+        if (isNaN(m)) return reply("❌ Contoh: .delay 10");
+        config.delayLoop = m * 60000;
         saveConfig();
-        reply(`✅ Delay diubah ke ${menit} menit`);
+        reply(`✅ Delay loop ${m} menit`);
         break;
 
       case ".status":
         reply(
           `📊 STATUS\n\n` +
           `Aktif: ${config.active ? "ON" : "OFF"}\n` +
-          `Delay: ${config.delayLoop / 60000} menit\n` +
-          `Pesan: ${config.text}`
+          `Delay: ${config.delayLoop / 60000} menit`
         );
         break;
     }
   });
-
-  // ================= CONNECTION =================
-  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
-
-    if (connection === "open") {
-      console.log("✅ Connected");
-      isConnected = true;
-
-      // kasih delay biar auth stabil
-      setTimeout(() => {
-        if (config.active) startLoop(sock);
-      }, 5000);
-    }
-
-    if (connection === "close") {
-      isConnected = false;
-
-      const reason = lastDisconnect?.error?.output?.statusCode;
-      console.log("❌ Disconnect:", reason);
-
-      if (reason === DisconnectReason.loggedOut) {
-        console.log("🛑 Session invalid. Hapus folder session!");
-        process.exit(0);
-      }
-
-      // penting: destroy socket lama
-      try { sock.ws.close(); } catch {}
-
-      console.log("🔄 Reconnecting...");
-      setTimeout(startBot, 5000);
-    }
-  });
 }
 
+// ================= RUN =================
 startBot();
