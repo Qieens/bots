@@ -21,16 +21,11 @@ const CONFIG_FILE = "config.json";
 
 if (fs.existsSync(CONFIG_FILE)) {
   try {
-    config = JSON.parse(fs.readFileSync(CONFIG_FILE));
-  } catch {}
-}
-
-// 🔥 VALIDASI CONFIG (ANTI ERROR)
-if (!Array.isArray(config.delayGroup)) {
-  config.delayGroup = [5000, 10000];
-}
-if (!config.text) {
-  config.text = "🔥 PROMOTE DISINI 🔥";
+    const file = JSON.parse(fs.readFileSync(CONFIG_FILE));
+    config = { ...config, ...file };
+  } catch {
+    console.log("⚠️ Config rusak, pakai default");
+  }
 }
 
 function saveConfig() {
@@ -41,23 +36,28 @@ function saveConfig() {
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 const getRandomDelay = () => {
+  if (!Array.isArray(config.delayGroup)) return 7000;
   const [min, max] = config.delayGroup;
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
-// ================= QUEUE =================
+// ================= STATE =================
 let queue = [];
 let isProcessing = false;
 let isReady = false;
 let sentCount = 0;
+let currentSock = null;
+let sentCache = new Set();
 
+// ================= QUEUE =================
 function shuffle(arr) {
   return arr.sort(() => Math.random() - 0.5);
 }
 
 function buildQueue(groups) {
+  if (!groups) return [];
   const ids = Object.keys(groups);
-  return shuffle(ids.filter(id => !groups[id].announce));
+  return shuffle(ids.filter(id => !groups[id]?.announce));
 }
 
 // ================= PROCESS =================
@@ -65,35 +65,55 @@ async function processQueue(sock) {
   if (isProcessing) return;
   isProcessing = true;
 
+  console.log("🚀 Worker dimulai");
+
   while (config.active) {
     try {
-      if (!isReady) {
-        console.log("⏳ Menunggu koneksi siap...");
+      if (!sock || !sock.ws || sock.ws.readyState !== 1) {
+        console.log("⏳ Socket belum ready...");
         await delay(3000);
         continue;
       }
 
+      if (!isReady) {
+        console.log("⏳ Menunggu sync...");
+        await delay(3000);
+        continue;
+      }
+
+      // build queue
       if (queue.length === 0) {
-        const groups = await sock.groupFetchAllParticipating();
+        const groups = await sock.groupFetchAllParticipating().catch(() => null);
+
+        if (!groups) {
+          console.log("⚠️ Gagal ambil grup");
+          await delay(5000);
+          continue;
+        }
+
         queue = buildQueue(groups);
-        console.log(`📦 Queue dibuat: ${queue.length} grup`);
+        sentCache.clear(); // ✅ reset anti double
+        console.log(`📦 Queue baru: ${queue.length} grup`);
       }
 
       const id = queue.shift();
       if (!id) continue;
 
+      // ✅ anti duplicate send
+      if (sentCache.has(id)) continue;
+
       try {
         await sock.sendMessage(id, { text: config.text });
-        console.log(`✅ Kirim ke ${id}`);
+        sentCache.add(id);
+        console.log(`✅ ${id}`);
       } catch (err) {
-        console.log(`❌ Gagal ${id}:`, err.message);
+        console.log(`❌ ${id}:`, err?.message || err);
       }
 
       sentCount++;
 
-      // 🔥 LIMIT PER SESSION
       if (sentCount >= config.maxPerSession) {
-        console.log("🛑 Limit tercapai, istirahat 10 menit...");
+        console.log("🛑 Cooldown 10 menit...");
         sentCount = 0;
         await delay(10 * 60 * 1000);
       }
@@ -103,16 +123,31 @@ async function processQueue(sock) {
       await delay(d);
 
     } catch (err) {
-      console.log("❌ Error:", err.message);
+      console.log("❌ Loop error:", err?.message || err);
       await delay(5000);
     }
   }
 
+  console.log("🛑 Worker berhenti");
   isProcessing = false;
 }
 
 // ================= START =================
-async function startBot(retry = 0) {
+async function startBot() {
+  console.log("🔄 Memulai bot...");
+
+  // ✅ kill socket lama
+  if (currentSock) {
+    try { currentSock.end(); } catch {}
+  }
+
+  // reset state
+  queue = [];
+  sentCache.clear();
+  sentCount = 0;
+  isProcessing = false;
+  isReady = false;
+
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
 
@@ -123,21 +158,21 @@ async function startBot(retry = 0) {
     printQRInTerminal: false
   });
 
+  currentSock = sock;
+
   sock.ev.on('creds.update', saveCreds);
 
   // ================= CONNECTION =================
-  sock.ev.on("connection.update", ({ connection, lastDisconnect, receivedPendingNotifications }) => {
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
 
     if (connection === "open") {
       console.log("✅ Connected");
-    }
 
-    // 🔥 FIX READY
-    if (receivedPendingNotifications) {
-      isReady = true;
-      console.log("🔥 Socket siap digunakan!");
+      isReady = true; // ✅ FIX: tidak pakai receivedPendingNotifications
 
-      if (config.active) processQueue(sock);
+      if (config.active && !isProcessing) {
+        processQueue(sock);
+      }
     }
 
     if (connection === "close") {
@@ -148,14 +183,12 @@ async function startBot(retry = 0) {
       isProcessing = false;
 
       if (reason === DisconnectReason.loggedOut) {
-        console.log("🛑 Session logout, hapus folder session!");
-        process.exit();
+        console.log("🛑 Session logout! Hapus session.");
+        process.exit(0);
       }
 
-      const delayReconnect = Math.min(3000 + retry * 3000, 30000);
-      console.log(`🔄 Reconnect dalam ${delayReconnect / 1000} detik...`);
-
-      setTimeout(() => startBot(retry + 1), delayReconnect);
+      console.log("🔄 Reconnect 5 detik...");
+      setTimeout(startBot, 5000);
     }
   });
 
@@ -167,14 +200,14 @@ async function startBot(retry = 0) {
     });
 
     const nomor = await new Promise(resolve => {
-      readline.question("📱 Masukkan nomor (62xxx): ", answer => {
+      readline.question("📱 Nomor (62xxx): ", answer => {
         readline.close();
         resolve(answer);
       });
     });
 
     const code = await sock.requestPairingCode(nomor.replace(/[^0-9]/g, ""));
-    console.log("🔑 Kode pairing:", code);
+    console.log("🔑 Pairing code:", code);
   }
 
   // ================= COMMAND =================
@@ -183,7 +216,6 @@ async function startBot(retry = 0) {
     if (!msg.message || !msg.key.fromMe) return;
 
     const jid = msg.key.remoteJid;
-
     const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
@@ -202,7 +234,8 @@ async function startBot(retry = 0) {
         config.active = true;
         saveConfig();
         reply("✅ Broadcast ON");
-        processQueue(sock);
+
+        if (isReady && !isProcessing) processQueue(sock);
         break;
 
       case ".off":
@@ -213,28 +246,18 @@ async function startBot(retry = 0) {
 
       case ".teks":
         const newText = text.slice(6).trim();
-        if (!newText) return reply("❌ Contoh: .teks halo semua");
-
+        if (!newText) return reply("❌ Teks kosong");
         config.text = newText;
         saveConfig();
-        reply("✅ Teks berhasil diubah");
-        break;
-
-      case ".delay":
-        const m = parseInt(args[1]);
-        if (isNaN(m)) return reply("❌ Contoh: .delay 10");
-
-        config.delayLoop = m * 60000;
-        saveConfig();
-        reply(`✅ Delay loop ${m} menit`);
+        reply("✅ Teks diupdate");
         break;
 
       case ".status":
         reply(
           `📊 STATUS\n\n` +
           `Aktif: ${config.active ? "ON" : "OFF"}\n` +
-          `Delay: ${config.delayLoop / 60000} menit\n` +
-          `Pesan: ${config.text}`
+          `Queue: ${queue.length}\n` +
+          `Processing: ${isProcessing}`
         );
         break;
     }
